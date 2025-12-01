@@ -1,0 +1,32 @@
+#! /usr/bin/env nix-shell
+#! nix-shell -i bpftrace -p bpftrace
+
+BEGIN {
+    printf("开始监控 btrfs_search_forward 调用...\n");
+    printf("%-20s %-16s %-8s %-12s\n", "时间", "进程名", "PID", "耗时(ms)");
+}
+
+kprobe:btrfs_search_forward
+{
+    @start[tid] = nsecs;  // 记录调用开始时间
+    @comm[tid] = comm;    // 记录进程名
+}
+
+kretprobe:btrfs_search_forward
+{
+    $duration_ms = (nsecs - @start[tid]) / 1000000;  // 计算耗时（毫秒）
+
+    printf("ret=%d, %-20s %-16s %-12llu\n", 
+        retval,
+        strftime("%H:%M:%S", nsecs),  // 正确使用 strftime 需要两个参数
+        @comm[tid], 
+        $duration_ms);
+
+    // 清理临时存储
+    delete(@start[tid]);
+    delete(@comm[tid]);
+}
+
+END {
+    printf("监控结束。\n");
+}
