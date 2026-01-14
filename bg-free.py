@@ -23,10 +23,10 @@ def get_least_used_block_groups(fs, top_n=10):
                 block_group = fs.block_group(chunk.vaddr, chunk.length)
                 # 注意：元组第一个元素是排序键（使用率）
                 # heapq.nsmallest 会自动按第一个元素排序
-                if block_group.used_pct == 0:
+                if block_group.used == 0:
                     continue
                 
-                yield (block_group.used_pct, block_group)
+                yield (block_group.used, block_group)
             except IndexError:
                 continue
     
@@ -36,7 +36,7 @@ def get_least_used_block_groups(fs, top_n=10):
     top_items = heapq.nsmallest(top_n, candidate_iterator())
     
     # 转换回 (block_group, used_pct) 格式，保持接口一致
-    return [(bg, pct) for pct, bg in top_items]
+    return [(bg, used) for used, bg in top_items]
 
 with btrfs.FileSystem(sys.argv[1]) as fs:
     print("Searching for the 10 least used DATA block groups...\n")
@@ -54,10 +54,12 @@ with btrfs.FileSystem(sys.argv[1]) as fs:
     
     # 打印每个块组的信息
     for bg, used_pct in least_used:
-        used_space = bg.length * used_pct // 100  # 计算已用空间
-        print("{:>14} {:>10}MiB {:>10}% {:>10}MiB".format(
-            bg.vaddr, 
-            bg.length // 1024 // 1024,
-            used_pct,
-            used_space // 1024 // 1024
-        ))
+        unit = "KiB" if bg.used < 1024*1024 else "MiB"
+        size = bg.used // 1024 if bg.used < 1024*1024 else bg.used // 1024 // 1024
+        print(f"{bg.vaddr:>14} {bg.length // 1024 // 1024:>10}MiB {bg.used_pct:>10}% {size:>10}{unit}")
+        # print("{:>14} {:>10}MiB {:>10}% {:>10}MiB".format(
+        #     bg.vaddr, 
+        #     bg.length // 1024 // 1024,
+        #     bg.used_pct,
+        #     bg.used // 1024 // 1024
+        # ))
