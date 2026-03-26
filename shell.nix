@@ -6,5 +6,6 @@ pkgs.mkShell {
       btrfs
     ]))
     btrfs-heatmap
+    bpftrace
   ];
 }

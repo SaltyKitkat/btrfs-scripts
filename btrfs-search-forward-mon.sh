@@ -1,5 +1,4 @@
-#! /usr/bin/env nix-shell
-#! nix-shell -i bpftrace -p bpftrace
+#! /usr/bin/env bpftrace
 
 BEGIN {
     printf("开始监控 btrfs_search_forward 调用...\n");
