@@ -1,0 +1,255 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * Monitor memmove_extent_buffer overhead
+ * in btrfs insert/delete paths, split by path.
+ *
+ * Usage: sudo bpftrace ./monitor_memmove.bt
+ */
+
+BEGIN
+{
+    printf("Monitoring btrfs leaf memmove... Hit Ctrl-C to stop.\n");
+}
+
+/* --- insert path --- */
+kprobe:btrfs_insert_empty_items
+{
+    @insert_start[tid] = nsecs;
+    @in_insert_path[tid] = 1;
+}
+
+kretprobe:btrfs_insert_empty_items
+/@insert_start[tid]/
+{
+    @insert_total_ns += nsecs - @insert_start[tid];
+    @insert_count += 1;
+    delete(@insert_start[tid]);
+    delete(@in_insert_path[tid]);
+}
+
+/* --- delete path --- */
+kprobe:btrfs_del_items
+{
+    @delete_start[tid] = nsecs;
+    @in_delete_path[tid] = 1;
+}
+
+kretprobe:btrfs_del_items
+/@delete_start[tid]/
+{
+    @delete_total_ns += nsecs - @delete_start[tid];
+    @delete_count += 1;
+    delete(@delete_start[tid]);
+    delete(@in_delete_path[tid]);
+}
+
+/* --- memmove_extent_buffer --- */
+kprobe:memmove_extent_buffer
+{
+    if (@in_insert_path[tid]) {
+        @memmove_insert_start[tid] = nsecs;
+        @memmove_insert_bytes += arg3;
+    } else if (@in_delete_path[tid]) {
+        @memmove_delete_start[tid] = nsecs;
+        @memmove_delete_bytes += arg3;
+    }
+}
+
+kretprobe:memmove_extent_buffer
+{
+    if (@memmove_insert_start[tid]) {
+        @memmove_insert_total_ns += nsecs - @memmove_insert_start[tid];
+        @memmove_insert_count += 1;
+        delete(@memmove_insert_start[tid]);
+    }
+    if (@memmove_delete_start[tid]) {
+        @memmove_delete_total_ns += nsecs - @memmove_delete_start[tid];
+        @memmove_delete_count += 1;
+        delete(@memmove_delete_start[tid]);
+    }
+}
+
+/* --- print helper --- */
+interval:s:5
+{
+    $it = (int64)0; $dt = (int64)0;
+    $ic = (int64)0; $dc = (int64)0;
+    $mit = (int64)0; $mdt = (int64)0;
+    $mic = (int64)0; $mdc = (int64)0;
+
+    if (@insert_total_ns) { $it = (int64)@insert_total_ns; }
+    if (@delete_total_ns) { $dt = (int64)@delete_total_ns; }
+    if (@insert_count) { $ic = (int64)@insert_count; }
+    if (@delete_count) { $dc = (int64)@delete_count; }
+    if (@memmove_insert_total_ns) { $mit = (int64)@memmove_insert_total_ns; }
+    if (@memmove_delete_total_ns) { $mdt = (int64)@memmove_delete_total_ns; }
+    if (@memmove_insert_count) { $mic = (int64)@memmove_insert_count; }
+    if (@memmove_delete_count) { $mdc = (int64)@memmove_delete_count; }
+
+    $lic = (int64)0; $lit = (int64)0;
+    $ldc = (int64)0; $ldt = (int64)0;
+    $lmic = (int64)0; $lmit = (int64)0;
+    $lmdc = (int64)0; $lmdt = (int64)0;
+
+    if (@last_insert_count) { $lic = (int64)@last_insert_count; }
+    if (@last_insert_total_ns) { $lit = (int64)@last_insert_total_ns; }
+    if (@last_delete_count) { $ldc = (int64)@last_delete_count; }
+    if (@last_delete_total_ns) { $ldt = (int64)@last_delete_total_ns; }
+    if (@last_memmove_insert_count) { $lmic = (int64)@last_memmove_insert_count; }
+    if (@last_memmove_insert_total_ns) { $lmit = (int64)@last_memmove_insert_total_ns; }
+    if (@last_memmove_delete_count) { $lmdc = (int64)@last_memmove_delete_count; }
+    if (@last_memmove_delete_total_ns) { $lmdt = (int64)@last_memmove_delete_total_ns; }
+
+    $dic = $ic - $lic;
+    $dit = $it - $lit;
+    $ddc = $dc - $ldc;
+    $ddt = $dt - $ldt;
+    $dmic = $mic - $lmic;
+    $dmit = $mit - $lmit;
+    $dmdc = $mdc - $lmdc;
+    $dmdt = $mdt - $lmdt;
+
+    if ($dic != 0 || $ddc != 0 || $dmic != 0 || $dmdc != 0) {
+        $ts = strftime("%H:%M:%S", nsecs);
+
+        if ($dic != 0 || $dmic != 0) {
+            printf("[%s]  insert: count=%lld ns=%lld  mm=%lld/%lld",
+                $ts, $dic, $dit, $dmic, $dmit);
+            if ($dit > 0) {
+                $ratio_i = $dmit * (int64)100 / $dit;
+                $ratio_i_frac = ($dmit * (int64)10000 / $dit) % (int64)100;
+                printf("  ratio=%lld.%02lld%%", $ratio_i, $ratio_i_frac);
+            }
+            printf("\n");
+        }
+
+        if ($ddc != 0 || $dmdc != 0) {
+            printf("[%s]  delete: count=%lld ns=%lld  mm=%lld/%lld",
+                $ts, $ddc, $ddt, $dmdc, $dmdt);
+            if ($ddt > 0) {
+                $ratio_d = $dmdt * (int64)100 / $ddt;
+                $ratio_d_frac = ($dmdt * (int64)10000 / $ddt) % (int64)100;
+                printf("  ratio=%lld.%02lld%%", $ratio_d, $ratio_d_frac);
+            }
+            printf("\n");
+        }
+
+        @last_insert_count = $ic;
+        @last_insert_total_ns = $it;
+        @last_delete_count = $dc;
+        @last_delete_total_ns = $dt;
+        @last_memmove_insert_count = $mic;
+        @last_memmove_insert_total_ns = $mit;
+        @last_memmove_delete_count = $mdc;
+        @last_memmove_delete_total_ns = $mdt;
+    }
+}
+
+END
+{
+    $insert_total = (int64)0;
+    $delete_total = (int64)0;
+    $memmove_insert_total = (int64)0;
+    $memmove_delete_total = (int64)0;
+
+    if (@insert_total_ns) {
+        $insert_total = (int64)@insert_total_ns;
+    }
+    if (@delete_total_ns) {
+        $delete_total = (int64)@delete_total_ns;
+    }
+    if (@memmove_insert_total_ns) {
+        $memmove_insert_total = (int64)@memmove_insert_total_ns;
+    }
+    if (@memmove_delete_total_ns) {
+        $memmove_delete_total = (int64)@memmove_delete_total_ns;
+    }
+
+    $path_total = $insert_total + $delete_total;
+    $memmove_total = $memmove_insert_total + $memmove_delete_total;
+
+    printf("\n========== btrfs leaf memmove stats ==========\n");
+    printf("%-30s %10s %16s %16s\n",
+           "function", "count", "total_ns", "avg_ns");
+
+    $ic = (int64)0;
+    $dc = (int64)0;
+    $mic = (int64)0;
+    $mdc = (int64)0;
+    $mib = (int64)0;
+    $mdb = (int64)0;
+
+    if (@insert_count) {
+        $ic = (int64)@insert_count;
+    }
+    if (@delete_count) {
+        $dc = (int64)@delete_count;
+    }
+    if (@memmove_insert_count) {
+        $mic = (int64)@memmove_insert_count;
+    }
+    if (@memmove_delete_count) {
+        $mdc = (int64)@memmove_delete_count;
+    }
+    if (@memmove_insert_bytes) {
+        $mib = (int64)@memmove_insert_bytes;
+    }
+    if (@memmove_delete_bytes) {
+        $mdb = (int64)@memmove_delete_bytes;
+    }
+
+    if ($ic > 0) {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "btrfs_insert_empty_items",
+               $ic, $insert_total,
+               $insert_total / $ic);
+    } else {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "btrfs_insert_empty_items", (int64)0, (int64)0, (int64)0);
+    }
+
+    if ($dc > 0) {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "btrfs_del_items",
+               $dc, $delete_total,
+               $delete_total / $dc);
+    } else {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "btrfs_del_items", (int64)0, (int64)0, (int64)0);
+    }
+
+    if ($mic > 0) {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "memmove_extent_buffer (insert)",
+               $mic, $memmove_insert_total,
+               $memmove_insert_total / $mic);
+    } else {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "memmove_extent_buffer (insert)", (int64)0, (int64)0, (int64)0);
+    }
+
+    if ($mdc > 0) {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "memmove_extent_buffer (delete)",
+               $mdc, $memmove_delete_total,
+               $memmove_delete_total / $mdc);
+    } else {
+        printf("%-30s %10lld %16lld %16lld\n",
+               "memmove_extent_buffer (delete)", (int64)0, (int64)0, (int64)0);
+    }
+
+    printf("\n%-30s %16s\n", "metric", "value");
+    printf("%-30s %16lld\n", "insert+delete total_ns", $path_total);
+    printf("%-30s %16lld\n", "memmove total_ns", $memmove_total);
+    printf("%-30s %16lld\n", "memmove_insert_bytes", $mib);
+    printf("%-30s %16lld\n", "memmove_delete_bytes", $mdb);
+
+    if ($path_total > 0) {
+        $ratio = $memmove_total * (int64)100 / $path_total;
+        $ratio_frac = ($memmove_total * (int64)10000 / $path_total) % (int64)100;
+        printf("%-30s %13lld.%02lld%%\n",
+               "memmove overhead ratio", $ratio, $ratio_frac);
+    }
+    printf("==============================================\n");
+}
