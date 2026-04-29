@@ -14,7 +14,7 @@ if [ "$1" == "-s" ]; then
     shift 2
 fi
 
-sudo btrfs ins dump-tree --hide-names "$@" \
+sudo btrfs ins dump-tree --bfs --hide-names "$@" \
     | grep -E '^node|^leaf' \
     | grep 'free space' \
     | awk -v node_size=$NODE_SIZE '
