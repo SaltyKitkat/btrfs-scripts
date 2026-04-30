@@ -1,4 +1,4 @@
-#! /usr/bin/env bpftrace
+#!/usr/bin/env bpftrace
 
 // 追踪 btrfs_preempt_reclaim_metadata_space 被调用
 kprobe:btrfs_preempt_reclaim_metadata_space
