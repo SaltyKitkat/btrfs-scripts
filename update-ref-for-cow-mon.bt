@@ -1,0 +1,32 @@
+#!/usr/bin/env bpftrace
+
+BEGIN {
+    printf("开始监控 update_ref_for_cow 调用...\n");
+    printf("%-20s %-16s %-8s %-12s\n", "时间", "进程名", "PID", "耗时(ns)");
+}
+
+kprobe:update_ref_for_cow
+{
+    @start[tid] = nsecs;
+    @pid[tid] = pid;
+    @comm[tid] = comm;
+}
+
+kretprobe:update_ref_for_cow
+{
+    $duration_ns = nsecs - @start[tid];
+
+    printf("%-20s %-16s %-8d %-12llu\n",
+        strftime("%H:%M:%S", nsecs),
+        @comm[tid],
+        @pid[tid],
+        $duration_ns);
+
+    delete(@start[tid]);
+    delete(@pid[tid]);
+    delete(@comm[tid]);
+}
+
+END {
+    printf("监控结束。\n");
+}
